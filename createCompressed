@@ -1,0 +1,429 @@
+#!/usr/bin/python
+# -*- coding: utf-8 -*-
+
+import os
+import commands
+import re
+import sys
+import shutil
+import base64
+
+losslessBase = "/tank/music/lossless"
+#losslessBase = "/media/music/lossless"
+#losslessBase = "m:\lossless"
+compressedBase = "/tank/music/compressed"
+#compressedBase = "/media/music/compressed"
+#compressedBase = "m:\compressed"
+
+outputType = 'mp3'
+removeSource = False
+onlyUpdateMeta = False
+
+###############################################################################
+def bashEscape(string):
+	"""
+	Place a string into single quotes and escape any single quotes in the string 
+	via '\'' i.e stop the string \' then start the string again.
+	@brief	Escape a string so that it can be safely used in a bash command line
+	@param	string	The string to escape
+	@return	string	A string escaped such that it can be used directly by bash
+	"""
+	return string.replace('\'','\'\\\'\'')
+
+###############################################################################
+def getItem(inString,searchRe,index):
+	m = re.search(searchRe,inString)
+	if m:
+		return unicode(m.group(index),"utf8")
+	else:
+		return u"unknown"
+
+###############################################################################
+def readMetaM4A(filename):
+	metaData = {}
+	cmd = "AtomicParsley '"+bashEscape(filename)+"' -t -e img"
+	print cmd
+
+	if os.path.exists('img_artwork_1.jpg'):
+		os.remove('img_artwork_1.jpg')
+
+	#grab all the data
+	p = os.popen(cmd)
+	meta = p.read()
+
+	#parse it
+	metaData['trackName'] = getItem(meta,"nam\" contains: (.+)",1)
+	metaData['trackArtist'] = getItem(meta,"ART\" contains: (.+)",1)
+	metaData['album'] = getItem(meta,"alb\" contains: (.+)",1)
+	metaData['albumArtist'] = getItem(meta,"aART\" contains: (.+)",1)
+	metaData['genre'] = getItem(meta,"gen\" contains: (.+)",1)
+	metaData['trackNumber'] = getItem(meta,"trkn\" contains: (.+) of (.+)",1)
+	metaData['albumTracks'] = getItem(meta,"trkn\" contains: (.+) of (.+)",2)
+	metaData['date'] = getItem(meta,"day\" contains: (.+)",1)
+	metaData['label'] = getItem(meta,"\[LABEL\] contains: (.+)",1)
+	metaData['catalognumber'] = getItem(meta,"\[CATALOGNUMBER\] contains: (.+)",1)
+	metaData['asin'] = getItem(meta,"\[ASIN\] contains: (.+)",1)
+	metaData['mb_trackId'] = getItem(meta,"\[MusicBrainz Track Id\] contains: (.+)",1)
+	metaData['mb_albumId'] = getItem(meta,"\[MusicBrainz Album Id\] contains: (.+)",1)
+	metaData['mb_artistId'] = getItem(meta,"\[MusicBrainz Artist Id\] contains: (.+)",1)
+	metaData['mb_albumArtistId'] = getItem(meta,"\[MusicBrainz Album Artist Id\] contains: (.+)",1)
+
+	if os.path.exists('img_artwork_1.jpg'):
+		f = open('img_artwork_1.jpg', 'rb')
+		metaData['artwork'] = f.read()
+		f.close()
+
+	return metaData
+
+###############################################################################
+def readMetaFLAC(filename):
+	metaData = {}
+	cmd = "metaflac --list '"+bashEscape(filename)+"'"
+	#print cmd
+
+	#grab all the data
+	p = os.popen(cmd)
+	meta = p.read()
+
+	#parse it
+	metaData['trackName'] = getItem(meta,": title=(.+)",1)
+	metaData['trackArtist'] = getItem(meta,": artist=(.+)",1)
+	metaData['album'] = getItem(meta,": album=(.+)",1)
+	metaData['albumArtist'] = getItem(meta,": albumartist=(.+)",1)
+	metaData['genre'] = 'unknown'
+	metaData['trackNumber'] = getItem(meta,": tracknumber=(.+)",1)
+	metaData['albumTracks'] = getItem(meta,": totaltracks=(.+)",1)
+	metaData['date'] = getItem(meta,": date=(.+)",1)
+	metaData['label'] = getItem(meta,": label=(.+)",1)
+	metaData['catalognumber'] = getItem(meta,": catalognumber=(.+)",1)
+	metaData['asin'] = getItem(meta,": asin=(.+)",1)
+	metaData['mb_trackId'] = getItem(meta,": musicbrainz_trackid=(.+)",1)
+	metaData['mb_albumId'] = getItem(meta,": musicbrainz_albumid=(.+)",1)
+	metaData['mb_artistId'] = getItem(meta,": musicbrainz_artistid=(.+)",1)
+	metaData['mb_albumArtistId'] = getItem(meta,": musicbrainz_albumartistid=(.+)",1)
+
+	if os.path.exists('1.jpg'):
+		os.remove('1.jpg')
+	cmd = "metaflac --export-picture-to=1.jpg '"+bashEscape(filename)+"'"
+	commands.getstatusoutput(cmd)
+	if os.path.exists('1.jpg'):
+		f = open('1.jpg', 'rb')
+		metaData['artwork'] = f.read()
+		f.close()
+
+	return metaData
+
+###############################################################################
+def readMeta(filename):
+	if filename.find('m4a')!=-1:
+		return readMetaM4A(filename)
+	elif filename.find('flac')!=-1:
+		return readMetaFLAC(filename)
+	else:
+		return {}
+
+###############################################################################
+def decompressM4A(filename):
+	cmd = "ffmpeg -y -v 0 -i '"+bashEscape(filename)+"' t.wav"
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def decompressFLAC(filename):
+	cmd = "flac -f -d '" +bashEscape(filename)+ "' --output-name=t.wav"
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def decompress(filename):
+	print filename
+	if filename.find('m4a')!=-1:
+		return decompressM4A(filename)
+	if filename.find('flac')!=-1:
+		return decompressFLAC(filename)
+
+###############################################################################
+def compressM4A(filename):
+	cmd = "faac -q 160 -o '"+bashEscape(filename)+"' t.wav"
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def compressFLAC(filename):
+	cmd = "flac -f -8 't.wav' --output-name="+bashEscape(filename)
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def compressOGG(filename):
+	cmd = "oggenc -q 6.0 't.wav' -o "+bashEscape(filename)
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def compressMP3(filename):
+	cmd = "lame -V3 't.wav' -o "+bashEscape(filename)
+	print cmd
+	return os.system(cmd)
+
+###############################################################################
+def compress(filename):
+	if filename.find('m4a')!=-1:
+		return compressM4A(filename)
+	if filename.find('flac')!=-1:
+		return compressFLAC(filename)
+	if filename.find('ogg')!=-1:
+		return compressOGG(filename)
+	if filename.find('mp3')!=-1:
+		return compressMP3(filename)
+
+###############################################################################
+def resizeArtwork(metaData):
+	if metaData.has_key("artwork"):
+		f = open('art.jpg','wb')
+		f.write(metaData['artwork'])
+		f.close()
+
+		#grab all the data
+		p = os.popen('identify art.jpg')
+		info = p.read()
+		p.close()
+
+		print info
+		m = re.search("([0-9]+)x([0-9]+)",info)
+		if m:
+			if int(m.group(1))>256 or int(m.group(1))>256:
+				os.system('mogrify -resize 256x256 art.jpg')
+				
+				f = open('art.jpg', 'rb')
+				metaData['artwork'] = f.read()
+				f.close()
+
+###############################################################################
+def writeMetaM4A(filename,metaData):
+	cmd = "AtomicParsley '"+bashEscape(filename)+"' --overWrite"
+
+	#build up rest of string
+	cmd = cmd + " --artist '" +bashEscape(metaData['trackArtist'])+ "'"
+	cmd = cmd + " --title '" +bashEscape(metaData['trackName'])+ "'"
+	cmd = cmd + " --album '" +bashEscape(metaData['album'])+ "'"
+	cmd = cmd + " --genre '" +bashEscape(metaData['genre'])+ "'"
+	cmd = cmd + " --tracknum '" +bashEscape(metaData['trackNumber'])+ "/" +bashEscape(metaData['albumTracks'])+ "'"
+	cmd = cmd + " --albumArtist '" +bashEscape(metaData['albumArtist'])+ "'"
+
+	#artwork?
+	if metaData.has_key("artwork"):
+		f = open('art.jpg','wb')
+		f.write(metaData['artwork'])
+		f.close()
+		cmd = cmd + " --artwork 'art.jpg'"
+
+	print cmd
+	commands.getstatusoutput(cmd)
+
+###############################################################################
+def writeMetaFLAC(filename,metaData):
+	cmd = "metaflac"
+
+	#build up rest of string
+	cmd	= cmd + " --set-tag='artist=" +bashEscape(metaData['trackArtist'])+"'"
+	cmd	= cmd + " --set-tag='albumartist=" +bashEscape(metaData['albumArtist'])+"'"
+	cmd	= cmd + " --set-tag='title=" +bashEscape(metaData['trackName'])+"'"
+	cmd	= cmd + " --set-tag='album=" +bashEscape(metaData['album'])+"'"
+	cmd	= cmd + " --set-tag='tracknumber=" +bashEscape(metaData['trackNumber'])+"'"
+	cmd	= cmd + " --set-tag='totaltracks=" +bashEscape(metaData['albumTracks'])+"'"
+	if metaData.has_key('label'):
+		cmd	= cmd + " --set-tag='label=" +bashEscape(metaData['label'])+"'"
+	if metaData.has_key('asin'):
+		cmd	= cmd + " --set-tag='asin=" +bashEscape(metaData['asin'])+"'"
+	if metaData.has_key('mb_trackId'):
+		cmd	= cmd + " --set-tag='musicbrainz_trackid=" +bashEscape(metaData['mb_trackId'])+"'"
+	if metaData.has_key('mb_albumId'):
+		cmd	= cmd + " --set-tag='musicbrainz_albumid=" +bashEscape(metaData['mb_albumId'])+"'"
+	if metaData.has_key('mb_artistId'):
+		cmd	= cmd + " --set-tag='musicbrainz_artistid=" +bashEscape(metaData['mb_artistId'])+"'"
+	if metaData.has_key('mb_albumArtistId'):
+		cmd	= cmd + " --set-tag='musicbrainz_albumartistid=" +bashEscape(metaData['mb_albumArtistId'])+"'"
+	if metaData.has_key('catalognumber'):
+		cmd	= cmd + " --set-tag='catalognumber=" +bashEscape(metaData['catalognumber'])+"'"
+	if metaData.has_key('date'):
+		cmd	= cmd + " --set-tag='date=" +bashEscape(metaData['date'])+"'"
+
+	if metaData.has_key('artwork'):
+		f = open('art.jpg','wb')
+		f.write(metaData['artwork'])
+		f.close()
+		cmd = cmd + "  --import-picture-from='art.jpg'"
+
+	cmd = cmd + " '" +bashEscape(filename)+ "'"
+
+	print cmd
+	commands.getstatusoutput(cmd)
+
+###############################################################################
+def writeMetaOGG(filename,metaData):
+	cmd = ""
+
+	#build up rest of string
+	cmd	= cmd + "artist=" +metaData['trackArtist'] + "\n"
+	cmd	= cmd + "albumartist=" +metaData['albumArtist']+"\n"
+	cmd	= cmd + "title=" +metaData['trackName']+"\n"
+	cmd	= cmd + "album=" +metaData['album']+"\n"
+	cmd	= cmd + "tracknumber=" +metaData['trackNumber']+"\n"
+	cmd	= cmd + "totaltracks=" +metaData['albumTracks']+"\n"
+	cmd	= cmd + "tracktotal=" +metaData['albumTracks']+"\n"
+	if metaData.has_key('label'):
+		cmd	= cmd + "label=" +metaData['label']+"\n"
+	if metaData.has_key('asin'):
+		cmd	= cmd + "asin=" +metaData['asin']+"\n"
+	if metaData.has_key('mb_trackId'):
+		cmd	= cmd + "musicbrainz_trackid=" +metaData['mb_trackId']+"\n"
+	if metaData.has_key('mb_albumId'):
+		cmd	= cmd + "musicbrainz_albumid=" +metaData['mb_albumId']+"\n"
+	if metaData.has_key('mb_artistId'):
+		cmd	= cmd + "musicbrainz_artistid=" +metaData['mb_artistId']+"\n"
+	if metaData.has_key('mb_albumArtistId'):
+		cmd	= cmd + "musicbrainz_albumartistid=" +metaData['mb_albumArtistId']+"\n"
+	if metaData.has_key('catalognumber'):
+		cmd	= cmd + "catalognumber=" +metaData['catalognumber']+"\n"
+	if metaData.has_key('date'):
+		cmd	= cmd + "date=" +metaData['date']+"\n"
+
+	if metaData.has_key('artwork'):
+		cmd	= cmd + "coverartmime=image/jpeg\n"
+		s = base64.standard_b64encode(metaData['artwork'])
+		cmd = cmd + "coverart="+s+"\n"
+
+	f = open('comments.txt','wt')
+	f.write(cmd)
+	f.close()
+
+	cmd = "vorbiscomment -w -c comments.txt '" +bashEscape(filename)+ "'"
+	print cmd
+	commands.getstatusoutput(cmd)
+
+	#os.remove('comments.txt')
+
+###############################################################################
+from mutagen.mp3 import MP3
+from mutagen.easyid3 import EasyID3
+from mutagen.id3 import ID3, TPE2, APIC
+import mutagen.id3
+
+def writeMetaMP3(filename,metaData):
+	audio = MP3(filename, ID3=EasyID3)
+	try:
+		audio.add_tags(ID3=EasyID3)
+	except mutagen.id3.error:
+		print("has tags")
+
+	#print audio.info.length
+	audio['title'] = metaData['trackName']
+	audio['artist'] = metaData['trackArtist']
+	audio['album'] = metaData['album']
+	audio['tracknumber'] = metaData['trackNumber']
+	audio['date'] = metaData['date']
+	audio['asin'] = metaData['asin']
+	audio['musicbrainz_trackid'] = metaData['mb_trackId']
+	audio['musicbrainz_albumid'] = metaData['mb_albumId']
+	audio['musicbrainz_artistid'] = metaData['mb_artistId']
+	audio['musicbrainz_albumartistid'] = metaData['mb_albumArtistId']
+	audio.save()
+
+	#album artist
+	audio = MP3(filename)
+	audio["TPE2"] = TPE2(encoding=3, text=metaData['albumArtist'])
+	#artwork
+	if metaData.has_key('artwork'):
+		audio.tags.add(APIC(encoding=3,mime='image/jpeg',type=3,desc=u'Cover',data=metaData['artwork']))
+	audio.save()
+	print(audio.pprint())	
+
+###############################################################################
+def writeMeta(filename,metaData):
+	if filename.find('m4a')!=-1:
+		writeMetaM4A(filename,metaData)
+	elif filename.find('flac')!=-1:
+		writeMetaFLAC(filename,metaData)
+	elif filename.find('ogg')!=-1:
+		writeMetaOGG(filename,metaData)
+	elif filename.find('mp3')!=-1:
+		writeMetaMP3(filename,metaData)
+
+###############################################################################
+def directoryCallback( unused, dirName, nameList ):
+	ind = 0
+	for entry in nameList:
+		fullPath = os.path.join(dirName,entry)
+
+		#print "Processing: %s (%d of %d)" % (fullPath,ind,len(nameList))
+		ind += 1
+
+		if os.path.isfile(fullPath):
+			idx = fullPath.find(losslessBase)
+			if idx==0:
+				albumArtist = fullPath[len(losslessBase)+1:]
+				compressedFile = os.path.join(compressedBase,albumArtist)
+
+				#set the file extension on the output file
+				parts = os.path.split(compressedFile)
+				fileExt = os.path.splitext(parts[1])
+				compressedFile = os.path.join(parts[0],fileExt[0])
+				compressedFile = compressedFile + "." + outputType
+				#print compressedFile
+
+				compressedFileBash = compressedFile.replace('\'','\'\\\'\'')
+				tempFile = "temp."+outputType
+				#print tempFile
+
+				#do we need to create the compressed output file
+				createCompressed = False
+				fileMissing = False
+				if not os.path.exists(compressedFile):
+					createCompressed = True
+					fileMissing = True
+
+				if not fileMissing:
+					if os.path.getmtime(fullPath)>os.path.getmtime(compressedFile):
+						createCompressed = True
+
+				if createCompressed:
+					print fullPath + " --> " + compressedFile
+
+					#create output folder if we don't have it
+					if not os.path.exists(os.path.dirname(compressedFile)):
+						os.makedirs(os.path.dirname(compressedFile))
+
+					#read in the meta data
+					m = readMeta(fullPath)
+
+					#clip the maximum size of the image (OGG I'm looking at you)
+					resizeArtwork(m)
+
+					if not onlyUpdateMeta or fileMissing:
+						#decompress the file to wav
+						ret = decompress(fullPath)
+						if ret:
+							print "Decompress failed"
+							sys.exit(1)
+
+						#compress!
+						ret = compress(tempFile)
+						if ret:
+							print "Compress failed"
+							sys.exit(1)
+
+						#put the meta data into the output file
+						writeMeta(tempFile,m)
+
+						#move to output
+						shutil.move(tempFile,compressedFile)
+						if removeSource:
+							os.remove(fullPath)
+					else:
+						writeMeta(compressedFile,m)
+
+					#sys.exit(1)
+
+#where it all begins
+os.path.walk( losslessBase, directoryCallback, None)
